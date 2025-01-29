@@ -61,8 +61,11 @@ public function add_sent_to_column($columns) {
 
     // Only add "Sent To" column for "document" post type
     if ($_GET['post_status'] === 'send_document') {
+        $date_column = $columns['date'];
+        unset($columns['date']);
         // Add the "Sent To" column
         $columns['sent_to'] = 'Sent To';
+         $columns['date'] = $date_column;
     }
 
     return $columns;
