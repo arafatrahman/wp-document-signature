@@ -26,8 +26,58 @@ class CustomDocumentsPlugin {
         add_action('admin_footer', [$this, 'add_send_documents_modal']);
         add_action('wp_ajax_send_documents', [$this, 'handle_send_documents_ajax']); // For logged-in users
         add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_custom_js']);
+        add_filter('get_edit_post_link', [$this, 'modify_post_title_link'], 10, 2);
+        add_filter('manage_document_posts_columns', [$this, 'add_sent_to_column']);
+        add_action('manage_document_posts_custom_column', [$this, 'display_sent_to_column'], 10, 2);
 
    
+    }
+
+    public function display_sent_to_column($column, $post_id) {
+        if ($column === 'sent_to') {
+            $post = get_post($post_id);
+    
+            // Only display the "Sent To" info if the post is in "send_document" status
+            if ($post->post_status === 'send_document') {
+                // Retrieve the "Sent To" data from post meta
+                $sent_to = get_post_meta($post_id, '_sent_to', true);
+    
+                if ($sent_to) {
+                    echo esc_html($sent_to); // Display emails or names
+                } else {
+                    echo 'Not Sent'; // If no "Sent To" info, show "Not Sent"
+                }
+            } else {
+                echo '-'; // If status is not "send_document", show a placeholder
+            }
+        }
+    }
+
+    // Add custom column in Documents admin table
+public function add_sent_to_column($columns) {
+    global $post_type, $post;
+
+
+
+    // Only add "Sent To" column for "document" post type
+    if ($_GET['post_status'] === 'send_document') {
+        // Add the "Sent To" column
+        $columns['sent_to'] = 'Sent To';
+    }
+
+    return $columns;
+}
+
+    public function modify_post_title_link($url, $post_id) {
+        
+        
+        // Check if the post type is "document" and its status is "send_document"
+        $post = get_post($post_id);
+        if (isset($_GET['post_status'])) {
+            // Change the link to the "View" link
+            return get_permalink($post_id); // Link to the document's front-end view
+        }
+        return $url; // Otherwise, return the original link (which is the "Edit" link)
     }
 
   public function enqueue_admin_custom_js() {
@@ -55,6 +105,15 @@ class CustomDocumentsPlugin {
             $post_id = isset($parsed_data['post_id']) ? sanitize_text_field($parsed_data['post_id']) : '';
             $signers = isset($parsed_data['signers']) ? $parsed_data['signers'] : [];
     
+            // Store the "Sent To" information as post meta
+            $sent_to = [];
+            foreach ($signers as $signer) {
+                $sent_to[] = sanitize_text_field($signer['name']) . ' <' . sanitize_email($signer['email']) . '>';
+            }
+            update_post_meta($post_id, '_sent_to', implode(', ', $sent_to)); // Store as comma-separated list
+        
+
+
             // Change the post status to 'send_document' after sending the email
             $document_post = get_post($post_id);
             if ($document_post) {
@@ -159,12 +218,16 @@ public function add_send_documents_modal() {
     
 
 
-    public function add_send_documents_action($actions, $post) {
-        if ($post->post_type === 'document') {
-            $actions['send_documents'] = '<a href="#" class="send-documents-button" data-toggle="modal" data-target="#sendDocumentsModal" data-post-id="' . $post->ID . '">Send Documents</a>';
-        }
-        return $actions;
+public function add_send_documents_action($actions, $post) {
+    // Check if the post type is "document"
+    
+    if(isset($_GET['post_status']) && $_GET['post_status'] == 'send_document'){
+        return [];
     }
+    $actions['send_documents'] = '<a href="#" class="send-documents-button" data-toggle="modal" data-target="#sendDocumentsModal" data-post-id="' . $post->ID . '">Send Documents</a>';
+    return $actions;
+}
+
     
 
     // Register custom post statuses for "Send Documents" and "Signed Documents".
@@ -191,6 +254,8 @@ public function register_custom_post_statuses() {
 public function modify_documents_admin_views($views) {
     global $wpdb;
 
+    unset($views['publish']); // Remove "Published" from the list
+
     // Check if the custom post type is "document".
     if (get_post_type() === 'document') {
         // Change the "All" label to "All Documents".
@@ -199,11 +264,11 @@ public function modify_documents_admin_views($views) {
         }
     }
 
-    // Query for counts of different post statuses
-    $all_documents_count = $wpdb->get_var("
-        SELECT COUNT(ID)
-        FROM $wpdb->posts
-        WHERE post_type = 'document'
+
+
+    $all_documents_count = (int) $wpdb->get_var("
+            SELECT COUNT(ID) FROM $wpdb->posts WHERE post_type = 'document' 
+            AND (post_status = 'publish' OR post_status = 'send_document' OR post_status = 'draft' AND post_status != 'trash')
     ");
     
     $send_documents_count = $wpdb->get_var("
@@ -219,7 +284,9 @@ public function modify_documents_admin_views($views) {
         WHERE post_type = 'document'
         AND post_status = 'signed_document'
     ");
-    
+    $trash_view = isset($views['trash']) ? $views['trash'] : '';
+
+    $views = []; 
     // Update the views with counts
     $views['all'] = sprintf(
         '<a href="%s" %s>All Documents (%d)</a>',
@@ -242,6 +309,11 @@ public function modify_documents_admin_views($views) {
         $signed_documents_count
     );
 
+    // Add back the "Trash" link if it exists
+    if ($trash_view) {
+        $views['trash'] = $trash_view;
+    }
+
     return $views;
 }
 
@@ -249,7 +321,7 @@ public function modify_documents_admin_views($views) {
     // Register the custom post type.
     public function register_documents_post_type() {
         $labels = [
-            'name'               => 'Documents',
+            'name'               => 'Your Documents',
             'singular_name'      => 'Document',
             'menu_name'          => 'Documents',
             'name_admin_bar'     => 'Document',
@@ -316,3 +388,5 @@ public function modify_documents_admin_views($views) {
 
 // Initialize the plugin.
 new CustomDocumentsPlugin();
+
+
