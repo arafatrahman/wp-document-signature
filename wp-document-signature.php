@@ -29,8 +29,99 @@ class CustomDocumentsPlugin {
         add_filter('get_edit_post_link', [$this, 'modify_post_title_link'], 10, 2);
         add_filter('manage_document_posts_columns', [$this, 'add_sent_to_column']);
         add_action('manage_document_posts_custom_column', [$this, 'display_sent_to_column'], 10, 2);
+        add_action('enqueue_block_editor_assets', [$this,'wpds_signature_block_enqueue']);
+        add_filter('block_categories_all', [$this,'wpds_document_editor_register_block_category'], 10, 2);
+
+        add_action('init', [$this, 'create_review_sign_document_page']);
+        add_action('template_redirect', [$this, 'redirect_to_review_sign_document']);
+        add_filter('template_include', [$this, 'load_custom_review_sign_template']);
+
+
 
    
+    }
+
+
+
+    public function load_custom_review_sign_template($template) {
+        if (is_page('review-sign-document')) {
+            // Log if the template function is triggered
+            error_log('Loading custom template for Review Sign Document page.');
+    
+            // Get the path to your custom template
+            $custom_template = plugin_dir_path(__FILE__) . 'page-review-sign-document.php';
+            if (file_exists($custom_template)) {
+                return $custom_template;
+            }
+        }
+        return $template;
+    }
+
+
+
+
+   
+
+    public function redirect_to_review_sign_document() {
+        // Check if we're not already on the 'review-sign-document' page
+        if (isset($_GET['document_id']) && is_numeric($_GET['document_id']) && !is_page('review-sign-document')) {
+            // Get the document ID and redirect to the review sign document page
+            $document_id = intval($_GET['document_id']);
+            $page_url = home_url('/review-sign-document/?document_id=' . $document_id);
+    
+            wp_redirect($page_url);
+            exit;
+        }
+    }
+
+        // Automatically create the page when the plugin is activated
+    public function create_review_sign_document_page() {
+        $page_title = 'Review Sign Document';
+        $page_slug = 'review-sign-document';
+
+        // Check if the page already exists by slug
+        $existing_page = get_page_by_path($page_slug);
+        if ($existing_page) {
+            return; // Page already exists, no need to create
+        }
+
+        // Page content (you can customize the content if needed)
+        $page_content = '[document_review_form]'; // Shortcode to display the document content or form
+
+        // Create the page
+        $new_page = array(
+            'post_title'    => $page_title,
+            'post_content'  => $page_content,
+            'post_status'   => 'publish',
+            'post_type'     => 'page',
+            'post_name'     => $page_slug,  // this sets the slug
+        );
+
+        // Insert the page into the WordPress database
+        wp_insert_post($new_page);
+    }
+
+
+    public function wpds_document_editor_register_block_category($categories, $post) {
+        return array_merge(
+            array(
+                array(
+                    'slug'  => 'wp-document-signature',
+                    'title' => __('WP Document Signature', 'wp-document-signature'),
+                    'icon'  => 'admin-page',
+                ),
+            ),
+            $categories
+        );
+    }
+
+    public function wpds_signature_block_enqueue() {
+        wp_enqueue_script(
+            'bwpds-signature-block',
+            plugins_url('bwpds-signature-block.js', __FILE__),
+            array('wp-blocks', 'wp-element', 'wp-editor', 'wp-components'),
+            filemtime(plugin_dir_path(__FILE__) . 'bwpds-signature-block.js')
+        );
     }
 
     public function display_sent_to_column($column, $post_id) {
@@ -97,60 +188,50 @@ public function add_sent_to_column($columns) {
 
     public function handle_send_documents_ajax() {
         if (isset($_POST['data'])) {
-            parse_str($_POST['data'], $parsed_data); // Parse the serialized string into an associative array
-            
+            parse_str($_POST['data'], $parsed_data);
+    
             if (!isset($parsed_data['send_documents_nonce']) || !wp_verify_nonce($parsed_data['send_documents_nonce'], 'send_documents_nonce_action')) {
                 wp_send_json_error(array('message' => 'Nonce verification failed.'));
-                return; // Prevent further processing if nonce fails
+                return;
             }
     
-            // Now we can process the data from $parsed_data
             $post_id = isset($parsed_data['post_id']) ? sanitize_text_field($parsed_data['post_id']) : '';
             $signers = isset($parsed_data['signers']) ? $parsed_data['signers'] : [];
     
-            // Store the "Sent To" information as post meta
+            // Create a duplicate of the document
+            $original_post = get_post($post_id);
+            $new_post_id = wp_insert_post([
+                'post_title'   => $original_post->post_title . ' (Copy)',
+                'post_content' => $original_post->post_content,
+                'post_status'  => 'send_document',
+                'post_type'    => 'document',
+            ]);
+    
+            // Now update the "Sent To" meta for the new document
             $sent_to = [];
             foreach ($signers as $signer) {
                 $sent_to[] = sanitize_text_field($signer['name']) . ' <' . sanitize_email($signer['email']) . '>';
             }
-            update_post_meta($post_id, '_sent_to', implode(', ', $sent_to)); // Store as comma-separated list
-        
-
-
-            // Change the post status to 'send_document' after sending the email
-            $document_post = get_post($post_id);
-            if ($document_post) {
-                wp_update_post([
-                    'ID' => $post_id,
-                    'post_status' => 'send_document'
-                ]);
-            }
+            update_post_meta($new_post_id, '_sent_to', implode(', ', $sent_to));
     
-            // Get the document title and description
-            $document_title = get_the_title($post_id);
-            $document_description = get_post_field('post_content', $post_id);
-    
-            // Process signers and send email
+            // Proceed with the email sending
             foreach ($signers as $signer) {
                 $name = sanitize_text_field($signer['name']);
                 $email = sanitize_email($signer['email']);
     
-                // Create the email subject and body
-                $subject = "Review and Sign: " . $document_title;
+                $subject = "Review and Sign: " . get_the_title($new_post_id);
                 $body = "
-                    <h3>Document: $document_title</h3>
-                    <p>$document_description</p>
-                    <p><a href='" . site_url() . "/review-sign-document?document_id=$post_id' target='_blank' style='background-color:#4CAF50;color:white;padding:10px;text-decoration:none;border-radius:5px;'>Review and Sign</a></p>
+                    <h3>Document: " . get_the_title($new_post_id) . "</h3>
+                    <p>" . $original_post->post_content . "</p>
+                    <p><a href='" . site_url() . "/review-sign-document?document_id=$new_post_id' target='_blank' style='background-color:#4CAF50;color:white;padding:10px;text-decoration:none;border-radius:5px;'>Review and Sign</a></p>
                 ";
     
-                // Send the email to the signer
                 wp_mail($email, $subject, $body, [
-                    'Content-Type: text/html; charset=UTF-8', // Ensure the email is sent as HTML
+                    'Content-Type: text/html; charset=UTF-8',
                 ]);
             }
     
-            // Return a success response
-            wp_send_json_success(array('message' => 'Documents sent successfully!'));
+            wp_send_json_success(array('message' => 'Documents sent and duplicated successfully!'));
         } else {
             wp_send_json_error(array('message' => 'No data received.'));
         }
@@ -233,7 +314,6 @@ public function add_send_documents_action($actions, $post) {
 
     
 
-    // Register custom post statuses for "Send Documents" and "Signed Documents".
 public function register_custom_post_statuses() {
     register_post_status('send_document', [
         'label'                     => 'Send Documents',
@@ -304,6 +384,8 @@ public function modify_documents_admin_views($views) {
         (isset($_GET['post_status']) && $_GET['post_status'] === 'send_document') ? 'class="current"' : '',
         $send_documents_count
     );
+
+
 
     $views['signed_documents'] = sprintf(
         '<a href="%s" %s>Signed Documents (%d)</a>',
