@@ -36,9 +36,18 @@ class CustomDocumentsPlugin {
         add_action('template_redirect', [$this, 'redirect_to_review_sign_document']);
         add_filter('template_include', [$this, 'load_custom_review_sign_template']);
 
+    add_action('pre_get_posts', [$this, 'exclude_send_documents_from_all']); // Add this line
+
+
 
 
    
+    }
+
+    public function exclude_send_documents_from_all($query) {
+        if (is_admin() && $query->is_main_query() && $query->get('post_type') === 'document' && !isset($_GET['post_status'])) {
+            $query->set('post_status', ['publish', 'draft', 'pending']);
+        }
     }
 
 
@@ -201,7 +210,7 @@ public function add_sent_to_column($columns) {
             // Create a duplicate of the document
             $original_post = get_post($post_id);
             $new_post_id = wp_insert_post([
-                'post_title'   => $original_post->post_title . ' (Copy)',
+                'post_title'   => $original_post->post_title . '',
                 'post_content' => $original_post->post_content,
                 'post_status'  => 'send_document',
                 'post_type'    => 'document',
@@ -351,11 +360,18 @@ public function modify_documents_admin_views($views) {
 
     $all_documents_count = (int) $wpdb->get_var("
             SELECT COUNT(ID) FROM $wpdb->posts WHERE post_type = 'document' 
-            AND (post_status = 'publish' OR post_status = 'send_document' OR post_status = 'draft' AND post_status != 'trash')
+            AND (post_status = 'publish' OR post_status = 'draft' AND post_status != 'trash')
     ");
     
     $send_documents_count = $wpdb->get_var("
         SELECT COUNT(ID)
+        FROM $wpdb->posts
+        WHERE post_type = 'document'
+        AND post_status = 'send_document'
+    ");
+
+    $send_documents_ids = $wpdb->get_col("
+        SELECT ID
         FROM $wpdb->posts
         WHERE post_type = 'document'
         AND post_status = 'send_document'
